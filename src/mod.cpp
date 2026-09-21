@@ -13,13 +13,17 @@ IMPORT_SERVICE(ConfigService, svc_config);
 DEFINE_HOOK(&daAlink_c::procMoveInit, LinkProcMoveInit);
 DEFINE_HOOK(&daAlink_c::setDoubleAnime, LinkSetDoubleAnime);
 DEFINE_HOOK(&daAlink_c::checkNormalAction, LinkCheckCutAction);
+DEFINE_HOOK(&daAlink_c::decideCommonDoStatus, LinkDecideCommonDoStatus);
 
 UiElementHandle statusText1 = 0;
 UiElementHandle statusText2 = 0;
+UiElementHandle statusText3 = 0;
 ConfigVarHandle var1 = 0;
 ConfigVarHandle var2 = 0;
+ConfigVarHandle var3 = 0;
 
 bool running = false;
+bool holdingA = false;
 
 extern "C" {
 
@@ -34,6 +38,11 @@ HookAction link_proc_move_init_pre(ModContext* ctx, void* args, void* retval, vo
 
             link->setSwordVoiceSe(Z2SE_AL_V_THROW_IB);
             running = true;
+            holdingA = true;
+
+            // Set here to prevent roll briefly appearing when in non-toggle mode
+            link->setDoStatus(BUTTON_STATUS_NONE);
+
             dCamera_c* camera = dCam_getBody();
             if (camera) {
                 camera->mCamParam.mManualMode = 0;
@@ -93,6 +102,36 @@ HookAction link_check_cut_action_pre(ModContext* ctx, void* args, void* retval, 
     return HOOK_CONTINUE;
 }
 
+void link_decide_common_do_status_post(ModContext* ctx, void* args, void* retval, void*) {
+    daAlink_c* link = daAlink_getAlinkActorClass();
+
+    bool toggle = false;
+    svc_config->get_bool(mod_ctx, var3, &toggle);
+
+    // BUTTON_STATUS_UNK_121 is Roll
+    if (dComIfGp_getDoStatus() == BUTTON_STATUS_UNK_121)
+    {
+        if (!toggle)
+        {
+            if (running)
+            {
+                link->setDoStatus(BUTTON_STATUS_NONE);
+            }
+        }
+        else
+        {
+            if (running)
+            {
+                link->setDoStatus(BUTTON_STATUS_CANCEL);
+            }
+            else if (holdingA)
+            {
+                link->setDoStatus(BUTTON_STATUS_NONE);
+            }
+        }
+    }
+}
+
 ModResult build(ModContext*, UiElementHandle panel, void*, ModError*) {
     svc_ui->pane_add_section(mod_ctx, panel, "Settings");
 
@@ -115,6 +154,14 @@ ModResult build(ModContext*, UiElementHandle panel, void*, ModError*) {
     control2.config_var = var2;  // from svc_config->register_var
     svc_ui->pane_add_control(mod_ctx, panel, &control2, &statusText2);
 
+    UiControlDesc control3 = UI_CONTROL_DESC_INIT;
+    control3.kind = UI_CONTROL_TOGGLE;
+    control3.label = "Toggle Sprint";
+    control3.help_rml = "Shown in the help pane while focused.";
+    control3.binding = UI_BINDING_CONFIG_VAR;
+    control3.config_var = var3;  // from svc_config->register_var
+    svc_ui->pane_add_control(mod_ctx, panel, &control3, &statusText3);
+
     return MOD_OK;
 }
 
@@ -135,9 +182,16 @@ MOD_EXPORT ModResult mod_initialize(ModError*) {
     desc2.default_bool = false;
     svc_config->register_var(mod_ctx, &desc2, &var2);
 
+    ConfigVarDesc desc3 = CONFIG_VAR_DESC_INIT;
+    desc3.name = "toggleSprint";
+    desc3.type = CONFIG_VAR_BOOL;
+    desc3.default_bool = false;
+    svc_config->register_var(mod_ctx, &desc3, &var3);
+
     mods::hook::add_pre<LinkProcMoveInit>(link_proc_move_init_pre);
     mods::hook::add_pre<LinkSetDoubleAnime>(link_set_double_anime_pre);
     mods::hook::add_pre<LinkCheckCutAction>(link_check_cut_action_pre);
+    mods::hook::add_post<LinkDecideCommonDoStatus>(link_decide_common_do_status_post);
 
     UiModsPanelDesc panel = UI_MODS_PANEL_DESC_INIT;
     panel.build = build;
@@ -149,10 +203,34 @@ MOD_EXPORT ModResult mod_initialize(ModError*) {
 
 MOD_EXPORT ModResult mod_update(ModError*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
-    if (running && mDoCPd_c::getHoldA(0) == 0 || (link && link->checkEventRun()) ||
-        (link && link->mProcID != daAlink_c::daAlink_PROC::PROC_MOVE))
+    if (mDoCPd_c::getHoldA(0) == 0)
     {
-        running = false;
+        holdingA = false;
+    }
+
+    if (link)
+    {
+        bool toggle = false;
+        svc_config->get_bool(mod_ctx, var3, &toggle);
+
+        if (!toggle)
+        {
+            if (running && mDoCPd_c::getHoldA(0) == 0 || link->checkEventRun() ||
+                link->mProcID != daAlink_c::daAlink_PROC::PROC_MOVE)
+            {
+                running = false;
+            }
+        }
+        else
+        {
+            if (running && !holdingA && mDoCPd_c::getHoldA(0) != 0 || link->checkEventRun() ||
+                link->mProcID != daAlink_c::daAlink_PROC::PROC_MOVE || mDoCPd_c::getStickValue(0) == 0)
+            {
+                running = false;
+                // If running is false but this is true then we want to avoid rolling
+                holdingA = true;
+            }
+        }
     }
 
     return MOD_OK;
