@@ -8,7 +8,7 @@ for the full mod API: services, hooking game functions, asset overlays, and more
 ## Quick start
 
 1. Click "Use this template" to create a new repository for your mod.
-2. Edit `mod.json`: set your mod's `id` (reverse-DNS style, e.g. `com.example.my_mod`),
+2. Edit `mod.json.in`: set your mod's `id` (reverse-DNS style, e.g. `com.example.my_mod`),
    `name`, `author`, and `description`.
 3. Rename the target in `CMakeLists.txt` (`add_mod(my_mod ...)`) (this names the `.dusk` file).
 4. Write your mod in `src/mod.cpp`.
