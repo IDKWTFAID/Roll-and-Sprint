@@ -30,7 +30,8 @@ extern "C" {
 HookAction link_proc_move_init_pre(ModContext* ctx, void* args, void* retval, void*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
     if (!running && link && link->mProcID == daAlink_c::daAlink_PROC::PROC_FRONT_ROLL) {
-        if (mDoCPd_c::getHoldA(0) != 0 && !link->checkEventRun() && !link->checkBootsOrArmorHeavy())
+        // CHANGED: was getHoldA, now the sprint button is R
+        if (mDoCPd_c::getHoldR(0) != 0 && !link->checkEventRun() && !link->checkBootsOrArmorHeavy())
         {
             if (link->mEquipItem != 0xFF) {
                 link->allUnequip(0);
@@ -201,36 +202,35 @@ MOD_EXPORT ModResult mod_initialize(ModError*) {
     return MOD_OK;
 }
 
+// CHANGED: sprint now starts by holding R while moving (no roll needed)
+// and stops when R is released. The "Toggle Sprint" option no longer applies.
 MOD_EXPORT ModResult mod_update(ModError*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
-    if (mDoCPd_c::getHoldA(0) == 0)
-    {
-        holdingA = false;
+    if (!link) {
+        running = false;
+        return MOD_OK;
     }
 
-    if (link)
-    {
-        bool toggle = false;
-        svc_config->get_bool(mod_ctx, var3, &toggle);
+    bool holdR = mDoCPd_c::getHoldR(0) != 0;
+    bool inMove = link->mProcID == daAlink_c::daAlink_PROC::PROC_MOVE;
 
-        if (!toggle)
+    if (!running) {
+        if (holdR && inMove && mDoCPd_c::getStickValue(0) != 0 &&
+            !link->checkEventRun() && !link->checkBootsOrArmorHeavy())
         {
-            if (running && mDoCPd_c::getHoldA(0) == 0 || link->checkEventRun() ||
-                link->mProcID != daAlink_c::daAlink_PROC::PROC_MOVE)
-            {
-                running = false;
+            if (link->mEquipItem != 0xFF) {
+                link->allUnequip(0);
+            }
+            link->setSwordVoiceSe(Z2SE_AL_V_THROW_IB);
+            running = true;
+
+            dCamera_c* camera = dCam_getBody();
+            if (camera) {
+                camera->mCamParam.mManualMode = 0;
             }
         }
-        else
-        {
-            if (running && !holdingA && mDoCPd_c::getHoldA(0) != 0 || link->checkEventRun() ||
-                link->mProcID != daAlink_c::daAlink_PROC::PROC_MOVE || mDoCPd_c::getStickValue(0) == 0)
-            {
-                running = false;
-                // If running is false but this is true then we want to avoid rolling
-                holdingA = true;
-            }
-        }
+    } else if (!holdR || !inMove || link->checkEventRun()) {
+        running = false;
     }
 
     return MOD_OK;
