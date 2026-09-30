@@ -220,7 +220,6 @@ MOD_EXPORT ModResult mod_update(ModError*) {
             if (link->mEquipItem != 0xFF) {
                 link->allUnequip(0);
             }
-            link->setSwordVoiceSe(Z2SE_AL_V_THROW_IB);
             running = true;
 
             dCamera_c* camera = dCam_getBody();
