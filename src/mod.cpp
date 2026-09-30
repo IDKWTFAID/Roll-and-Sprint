@@ -1,5 +1,9 @@
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_player.h"
+#include "d/actor/d_a_midna.h"
 #include "d/d_camera.h"
+#include "d/d_com_inf_game.h"
+#include "Z2AudioLib/Z2SeMgr.h"
 #include "mods/service.hpp"
 #include "mods/svc/hook.h"
 #include "mods/svc/hook.hpp"
@@ -15,6 +19,11 @@ DEFINE_HOOK(&daAlink_c::setDoubleAnime, LinkSetDoubleAnime);
 DEFINE_HOOK(&daAlink_c::checkNormalAction, LinkCheckCutAction);
 DEFINE_HOOK(&daAlink_c::decideCommonDoStatus, LinkDecideCommonDoStatus);
 
+// NEW: hooks for the held Wolf sprint
+DEFINE_HOOK(&daAlink_c::procWolfMove, WolfSprintMove);
+DEFINE_HOOK(&daAlink_c::setWolfAnmVoice, WolfSprintVoiceAnm);
+DEFINE_HOOK(&daMidna_c::execute, WolfSprintMidnaExecute);
+
 UiElementHandle statusText1 = 0;
 UiElementHandle statusText2 = 0;
 UiElementHandle statusText3 = 0;
@@ -24,6 +33,112 @@ ConfigVarHandle var3 = 0;
 
 bool running = false;
 bool holdingA = false;
+
+// ---------------------------------------------------------------------------
+// NEW: Wolf sprint (hold A as Wolf Link to keep the dash going).
+// Adapted from the Wolf sprint logic in Twilit Essentials, without stamina.
+// ---------------------------------------------------------------------------
+static constexpr int kWolfBurstIntervalFrames = 90;
+static constexpr int kWolfMinRunFrames = 6;
+static constexpr u8 kWolfVoiceDash = 4;
+
+static int s_wolfBurstTimer = 0;
+static bool s_wolfWasSprinting = false;
+static int s_wolfRunFrames = 0;
+static bool s_wolfMuteDashVoice = false;
+
+static bool wolf_sprint_wanted(daAlink_c* link) {
+    if (!link || !link->mpHIO) return false;
+    if (dComIfGp_isPauseFlag()) return false;
+    if (link->checkEventRun()) return false;
+    if (mDoCPd_c::getHoldA(0) == 0) return false;
+    return true;
+}
+
+static void wolf_apply_dash_speed(daAlink_c* link) {
+    const daAlinkHIO_wlMove_c1& wl = link->mpHIO->mWolf.mWlMove.m;
+    f32 dashMax;
+    if (link->checkWolfSlowDash()) {
+        dashMax = wl.mADashMaxSpeedSlow;
+    } else if (link->field_0x2fc7 == 2) {
+        dashMax = wl.mADashMaxSpeedSlow2;
+    } else {
+        dashMax = wl.mADashMaxSpeed;
+    }
+    link->mMaxSpeed = dashMax;
+}
+
+static void wolf_top_up_dash_duration(daAlink_c* link) {
+    const daAlinkHIO_wlMove_c1& wl = link->mpHIO->mWolf.mWlMove.m;
+    if (link->checkWolfSlowDash()) {
+        link->field_0x30d0 = wl.mADashDurationSlow;
+    } else if (link->field_0x2fc7 == 2) {
+        link->field_0x30d0 = wl.mADashDurationSlow2;
+    } else {
+        link->field_0x30d0 = wl.mADashDuration;
+    }
+}
+
+static HookAction wolf_move_pre(ModContext*, void* args, void* retval, void*) {
+    daAlink_c* link = mods::arg<daAlink_c*>(args, 0);
+
+    if (!wolf_sprint_wanted(link)) {
+        s_wolfBurstTimer = 0;
+        s_wolfMuteDashVoice = false;
+        if (s_wolfWasSprinting && s_wolfRunFrames >= kWolfMinRunFrames && link && link->mpHIO) {
+            link->field_0x30d0 = 0;
+            link->offNoResetFlg1(daPy_py_c::FLG1_DASH_MODE);
+            const f32 runMax = link->mpHIO->mWolf.mWlMoveNoP.m.mMaxSpeed;
+            if (link->mNormalSpeed > runMax) link->mNormalSpeed = runMax;
+        }
+        s_wolfWasSprinting = false;
+        s_wolfRunFrames = 0;
+        return HOOK_CONTINUE;
+    }
+
+    const bool wasSprinting = s_wolfWasSprinting;
+    s_wolfWasSprinting = true;
+    s_wolfRunFrames++;
+    link->onNoResetFlg1(daPy_py_c::FLG1_DASH_MODE);
+    wolf_top_up_dash_duration(link);
+    wolf_apply_dash_speed(link);
+    if (!wasSprinting) {
+        link->mNormalSpeed = link->mMaxSpeed;
+    }
+
+    if (++s_wolfBurstTimer < kWolfBurstIntervalFrames) return HOOK_CONTINUE;
+    s_wolfBurstTimer = 0;
+    s_wolfMuteDashVoice = true;
+
+    link->procWolfDashInit();
+    wolf_apply_dash_speed(link);
+    if (retval) *static_cast<int*>(retval) = 1;
+    return HOOK_SKIP_ORIGINAL;
+}
+
+static HookAction wolf_voice_anm_pre(ModContext*, void* args, void*, void*) {
+    if (!args) return HOOK_CONTINUE;
+    daAlink_c* link = mods::arg<daAlink_c*>(args, 0);
+    if (link != nullptr && link->field_0x2fd8 == kWolfVoiceDash && s_wolfMuteDashVoice &&
+        wolf_sprint_wanted(link)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
+static void wolf_midna_execute_post(ModContext*, void* args, void*, void*) {
+    if (!args) return;
+    daMidna_c* midna = mods::arg<daMidna_c*>(args, 0);
+    if (midna == nullptr || midna->mSoundID != Z2SE_MDN_V_CLINGST || midna->mVoiceFrame < 0.0f) {
+        return;
+    }
+    daAlink_c* link = static_cast<daAlink_c*>(daPy_getLinkPlayerActorClass());
+    if (!s_wolfMuteDashVoice || link == nullptr || !link->checkWolf() ||
+        !wolf_sprint_wanted(link)) {
+        return;
+    }
+    midna->mVoiceFrame = -1.0f;
+}
 
 extern "C" {
 
@@ -193,6 +308,11 @@ MOD_EXPORT ModResult mod_initialize(ModError*) {
     mods::hook::add_pre<LinkCheckCutAction>(link_check_cut_action_pre);
     mods::hook::add_post<LinkDecideCommonDoStatus>(link_decide_common_do_status_post);
 
+    // NEW: Wolf sprint hooks
+    mods::hook::add_pre<WolfSprintMove>(wolf_move_pre);
+    mods::hook::add_pre<WolfSprintVoiceAnm>(wolf_voice_anm_pre);
+    mods::hook::add_post<WolfSprintMidnaExecute>(wolf_midna_execute_post);
+
     UiModsPanelDesc panel = UI_MODS_PANEL_DESC_INIT;
     panel.build = build;
     panel.update = update;
@@ -201,7 +321,7 @@ MOD_EXPORT ModResult mod_initialize(ModError*) {
     return MOD_OK;
 }
 
-// CHANGED: sprint now starts by holding R while moving (no roll needed)
+// CHANGED: human sprint now starts by holding R while moving (no roll needed)
 // and stops when R is released. The "Toggle Sprint" option no longer applies.
 MOD_EXPORT ModResult mod_update(ModError*) {
     daAlink_c* link = daAlink_getAlinkActorClass();
