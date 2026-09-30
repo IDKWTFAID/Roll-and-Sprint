@@ -37,7 +37,6 @@ HookAction link_proc_move_init_pre(ModContext* ctx, void* args, void* retval, vo
                 link->allUnequip(0);
             }
 
-            link->setSwordVoiceSe(Z2SE_AL_V_THROW_IB);
             running = true;
             holdingA = true;
 
